@@ -8,10 +8,10 @@ into Iceberg tables on MinIO via Nessie catalog.
 import sys
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, when, expr, to_date
+from pyspark.sql.functions import col, from_json, when, expr
 from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, LongType,
-    MapType, IntegerType, BooleanType,
+    MapType, IntegerType,
 )
 
 # ── Iceberg + Nessie config ──────────────────
@@ -24,6 +24,7 @@ def create_spark():
     return (
         SparkSession.builder
         .appName("cdc-to-iceberg")
+        .config("spark.jars.packages", "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2,software.amazon.awssdk:s3:2.24.13")
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         .config("spark.sql.catalog.nessie", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.catalog.nessie.type", "nessie")
@@ -40,24 +41,28 @@ def create_spark():
     )
 
 
-# ── CDC Schema ───────────────────────────────
+# ── Flat CDC Schema (no schema envelope) ─────
+# With JsonConverter + schemas.enable=false + decimal.handling.mode=double
 
-CDC_SCHEMA = StructType([
-    StructField("schema", StructType([
-        StructField("type", StringType()),
-        StructField("fields", StringType()),
-    ])),
-    StructField("payload", StructType([
-        StructField("op", StringType()),
-        StructField("before", MapType(StringType(), StringType())),
-        StructField("after", MapType(StringType(), StringType())),
-        StructField("source", StructType([
-            StructField("table", StringType()),
-            StructField("lsn", LongType()),
-            StructField("ts_ms", LongType()),
-        ])),
-        StructField("ts_ms", LongType()),
-    ])),
+SOURCE_SCHEMA = StructType([
+    StructField("version", StringType()),
+    StructField("connector", StringType()),
+    StructField("name", StringType()),
+    StructField("ts_ms", LongType()),
+    StructField("snapshot", StringType()),
+    StructField("db", StringType()),
+    StructField("schema", StringType()),
+    StructField("table", StringType()),
+    StructField("txId", LongType()),
+    StructField("lsn", LongType()),
+])
+
+CDC_EVENT_SCHEMA = StructType([
+    StructField("before", MapType(StringType(), StringType()), True),
+    StructField("after", MapType(StringType(), StringType()), True),
+    StructField("source", SOURCE_SCHEMA),
+    StructField("op", StringType()),
+    StructField("ts_ms", LongType()),
 ])
 
 
@@ -70,19 +75,17 @@ def process_batch(df, epoch_id):
 
     parsed = (
         df.select(
-            col("key").cast("string").alias("kafka_key"),
-            from_json(col("value").cast("string"), CDC_SCHEMA).alias("cdc"),
+            from_json(col("value").cast("string"), CDC_EVENT_SCHEMA).alias("cdc"),
         )
         .filter(col("cdc").isNotNull())
         .select(
-            col("cdc.payload.op").alias("operation"),
-            col("cdc.payload.after").alias("after"),
-            col("cdc.payload.source.table").alias("source_table"),
-            col("cdc.payload.source.ts_ms").alias("event_ts_ms"),
+            col("cdc.op").alias("operation"),
+            col("cdc.after").alias("after"),
+            col("cdc.source.table").alias("source_table"),
+            col("cdc.ts_ms").alias("event_ts_ms"),
         )
     )
 
-    # Process each table
     tables = parsed.select("source_table").distinct().collect()
     for row in tables:
         table_name = row["source_table"]
@@ -91,7 +94,6 @@ def process_batch(df, epoch_id):
         if table_df.isEmpty():
             continue
 
-        # Convert CDC events into columns
         flat = table_df.select(
             col("operation"),
             col("after")["customer_id"].cast("int").alias("customer_id"),
@@ -100,12 +102,10 @@ def process_batch(df, epoch_id):
             col("after")["phone"].alias("phone"),
             col("after")["loyalty_tier"].alias("loyalty_tier"),
             col("after")["order_id"].cast("int").alias("order_id"),
-            col("after")["customer_id"].cast("int").alias("ord_customer_id"),
             col("after")["total_amount"].cast("double").alias("total_amount"),
             col("after")["status"].alias("status"),
             col("after")["payment_method"].alias("payment_method"),
             col("after")["item_id"].cast("int").alias("item_id"),
-            col("after")["order_id"].cast("int").alias("oi_order_id"),
             col("after")["product_name"].alias("product_name"),
             col("after")["quantity"].cast("int").alias("quantity"),
             col("after")["unit_price"].cast("double").alias("unit_price"),
@@ -113,8 +113,7 @@ def process_batch(df, epoch_id):
             col("after")["sku"].alias("sku"),
             col("after")["category"].alias("category"),
             col("after")["stock_quantity"].cast("int").alias("stock_quantity"),
-            col("after")["unit_price"].cast("double").alias("inv_unit_price"),
-            col("event_ts_ms"),
+            col("event_ts_ms").alias("_cdc_event_ts"),
         )
 
         if table_name == "customers":
@@ -151,7 +150,6 @@ def upsert_orders(spark, df):
         ON target.order_id = source.order_id
         WHEN MATCHED AND source.operation = 'd' THEN DELETE
         WHEN MATCHED THEN UPDATE SET
-            customer_id = source.ord_customer_id,
             total_amount = source.total_amount,
             status = source.status,
             payment_method = source.payment_method
@@ -167,7 +165,7 @@ def upsert_inventory(spark, df):
         ON target.sku = source.sku
         WHEN MATCHED THEN UPDATE SET
             stock_quantity = source.stock_quantity,
-            unit_price = source.inv_unit_price,
+            unit_price = source.unit_price,
             category = source.category,
             product_name = source.product_name
         WHEN NOT MATCHED THEN INSERT *
@@ -219,7 +217,7 @@ def main():
 
     print("Starting CDC streaming from Kafka → Iceberg...")
 
-    kafka_topic_pattern = "cdc.postgres.sales.*"
+    kafka_topic_pattern = "cdc.sales.*"
 
     df = (
         spark
@@ -238,7 +236,7 @@ def main():
         .writeStream
         .foreachBatch(process_batch)
         .outputMode("update")
-        .option("checkpointLocation", "s3a://iceberg-warehouse/checkpoints/cdc")
+        .option("checkpointLocation", "/tmp/spark-checkpoints/cdc")
         .trigger(processingTime="10 seconds")
         .start()
     )

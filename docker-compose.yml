@@ -57,8 +57,9 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_ADVERTISED_CONTROLLER_LISTENERS: CONTROLLER://kafka:9093
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
@@ -73,14 +74,15 @@ services:
       - cdc
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "bash", "-c", "/opt/kafka/bin/kafka-cluster.sh id --bootstrap-server localhost:9092"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-cluster.sh id --bootstrap-server localhost:9092 2>/dev/null || /opt/kafka/bin/kafka-metadata-quorum.sh --bootstrap-server localhost:9092 describe --status 2>/dev/null"]
       interval: 10s
       timeout: 10s
-      retries: 10
+      retries: 15
+      start_period: 30s
 
   # ── Kafka Connect (Debezium) ─────────────
   connect:
-    image: debezium/connect:2.7
+    image: quay.io/debezium/connect:3.0.3.Final
     container_name: cdc-connect
     ports:
       - "8083:8083"
@@ -149,28 +151,22 @@ services:
 
   # ── Spark (Iceberg + Nessie support) ─────
   spark:
-    image: bitnami/spark:3.5.4
+    image: spark:3.5.8-scala2.12-java11-python3-ubuntu
     container_name: cdc-spark
     ports:
       - "4040:4040"
+      - "7077:7077"
     environment:
-      SPARK_MODE: master
-      SPARK_MASTER_PORT: 7077
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
+      SPARK_MASTER_WEBUI_PORT: "4040"
+      SPARK_NO_DAEMONIZE: "true"
+    user: root
+    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
     volumes:
       - ./src/spark-streaming:/opt/spark-apps
       - ./src/scripts:/opt/scripts
     networks:
       - cdc
     logging: *default-logging
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4040"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
 
   # ── Trino ────────────────────────────────
   # ── Init MinIO bucket ────────────────────
