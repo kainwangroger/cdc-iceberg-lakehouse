@@ -1,0 +1,2 @@
+# Pour le générateur de changements (hors Docker)
+psycopg2-binary==2.9.10

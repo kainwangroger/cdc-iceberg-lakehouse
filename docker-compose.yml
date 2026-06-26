@@ -1,0 +1,224 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+volumes:
+  postgres_source_data:
+  kafka_data:
+  minio_data:
+  nessie_data:
+
+networks:
+  cdc:
+    driver: bridge
+
+services:
+
+  # ── PostgreSQL Source (WAL activé) ────────
+  postgres-source:
+    image: postgres:16-alpine
+    container_name: cdc-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: source_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+    volumes:
+      - postgres_source_data:/var/lib/postgresql/data
+      - ./src/scripts/init-source.sql:/docker-entrypoint-initdb.d/init-source.sql
+    networks:
+      - cdc
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Kafka (KRaft mode) ────────────────────
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: cdc-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: "cdc-cluster-001"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_COMPRESSION_TYPE: snappy
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - cdc
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "bash", "-c", "/opt/kafka/bin/kafka-cluster.sh id --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ── Kafka Connect (Debezium) ─────────────
+  connect:
+    image: debezium/connect:2.7
+    container_name: cdc-connect
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: cdc-connect
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: /kafka/connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - cdc
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  # ── MinIO (Iceberg Warehouse) ────────────
+  minio:
+    image: minio/minio:latest
+    container_name: cdc-minio
+    command: server /data --console-address ":9003"
+    ports:
+      - "9002:9000"
+      - "9003:9003"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    volumes:
+      - minio_data:/data
+    networks:
+      - cdc
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Nessie Catalog ───────────────────────
+  nessie:
+    image: projectnessie/nessie:latest
+    container_name: cdc-nessie
+    ports:
+      - "19120:19120"
+    environment:
+      QUARKUS_HTTP_PORT: "19120"
+      NESSIE_VERSION_STORE_TYPE: IN_MEMORY
+    networks:
+      - cdc
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19120/api/v2/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Spark (Iceberg + Nessie support) ─────
+  spark:
+    image: bitnami/spark:3.5.4
+    container_name: cdc-spark
+    ports:
+      - "4040:4040"
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_PORT: 7077
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+    volumes:
+      - ./src/spark-streaming:/opt/spark-apps
+      - ./src/scripts:/opt/scripts
+    networks:
+      - cdc
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4040"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # ── Trino ────────────────────────────────
+  # ── Init MinIO bucket ────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: cdc-minio-init
+    entrypoint: >
+      bash -c "
+      until mc alias set minio http://minio:9000 admin password123; do sleep 2; done;
+      mc mb minio/iceberg-warehouse --ignore-existing;
+      echo '✓ Bucket iceberg-warehouse created';
+      "
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - cdc
+
+  # ── Trino ────────────────────────────────
+  trino:
+    image: trinodb/trino:470
+    container_name: cdc-trino
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./src/trino/catalog:/etc/trino/catalog
+    networks:
+      - cdc
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "trino", "--execute", "SELECT 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── Grafana ──────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cdc-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./src/monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./src/monitoring/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./src/monitoring/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - cdc
+    logging: *default-logging

@@ -1,0 +1,43 @@
+{
+  "title": "CDC Pipeline — Kafka → Iceberg",
+  "version": 1,
+  "panels": [
+    {
+      "title": "Kafka Consumer Lag",
+      "type": "graph",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [{"expr": "kafka_consumer_lag", "legendFormat": "{{topic}}"}]
+    },
+    {
+      "title": "CDC Events per Table",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "sum(rate(cdc_events_total[5m]))", "legendFormat": "events/s"}]
+    },
+    {
+      "title": "Iceberg Snapshot Size",
+      "type": "graph",
+      "gridPos": {"x": 12, "y": 4, "w": 6, "h": 4},
+      "targets": [{"expr": "iceberg_snapshot_size_bytes"}]
+    },
+    {
+      "title": "Connect Connector Status",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4},
+      "targets": [{"expr": "kafka_connect_connector_status", "legendFormat": "{{connector}}"}]
+    },
+    {
+      "title": "Trino Queries / min",
+      "type": "graph",
+      "gridPos": {"x": 6, "y": 8, "w": 6, "h": 4},
+      "targets": [{"expr": "rate(trino_query_count[1m])"}]
+    },
+    {
+      "title": "Spark Streaming Progress",
+      "type": "graph",
+      "gridPos": {"x": 12, "y": 8, "w": 6, "h": 4},
+      "targets": [{"expr": "spark_streaming_input_rate", "legendFormat": "{{stream}}"}]
+    }
+  ],
+  "schemaVersion": 38
+}
