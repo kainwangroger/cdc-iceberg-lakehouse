@@ -3,6 +3,7 @@ Générateur de changements pour la source PostgreSQL.
 Simule des INSERT, UPDATE, DELETE sur les tables CDC.
 """
 
+import os
 import random
 import time
 from datetime import datetime, timezone
@@ -38,8 +39,8 @@ def get_connection():
         dbname="source_db",
         user="postgres",
         password="postgres",
-        host="localhost",
-        port=5432,
+        host=os.environ.get("PG_HOST", "localhost"),
+        port=int(os.environ.get("PG_PORT", "5432")),
     )
 
 
@@ -49,7 +50,8 @@ def generate_change(conn, table, action):
     if table == "customers":
         if action == "insert":
             name = f"{random.choice(FIRST_NAMES)} {random.choice(LAST_NAMES)}"
-            email = f"{name.lower().replace(' ', '.')}{random.randint(1,999)}@example.com"
+            ts = int(time.time() * 1e6) % 1000000
+            email = f"{name.lower().replace(' ', '.')}.{ts}@example.com"
             tier = random.choice(["bronze", "silver", "gold"])
             cur.execute(
                 "INSERT INTO sales.customers (name, email, phone, loyalty_tier) VALUES (%s, %s, %s, %s)",

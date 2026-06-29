@@ -10,3 +10,6 @@ data/
 Thumbs.db
 .vscode/
 .idea/
+*.tfstate
+*.tfstate.backup
+.terraform/

@@ -2,14 +2,14 @@
 # Soumet le job Spark Streaming CDC → Iceberg
 # Usage: bash submit_job.sh
 
-SPARK_MASTER="${SPARK_MASTER:-spark://spark:7077}"
+SPARK_MASTER="${SPARK_MASTER:-spark://spark-master:7077}"
 
 echo "Submitting CDC-to-Iceberg Spark job..."
 
-/opt/bitnami/spark/bin/spark-submit \
+/opt/spark/bin/spark-submit \
   --master "${SPARK_MASTER}" \
   --deploy-mode client \
-  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 \
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2,software.amazon.awssdk:s3:2.24.13,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 \
   --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
   --conf spark.sql.catalog.nessie=org.apache.iceberg.spark.SparkCatalog \
   --conf spark.sql.catalog.nessie.type=nessie \

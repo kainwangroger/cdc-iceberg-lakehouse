@@ -103,6 +103,7 @@ services:
     networks:
       - cdc
     logging: *default-logging
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
       interval: 15s
@@ -150,15 +151,15 @@ services:
       retries: 10
 
   # ── Spark (Iceberg + Nessie support) ─────
-  spark:
-    image: spark:3.5.8-scala2.12-java11-python3-ubuntu
-    container_name: cdc-spark
+  spark-master:
+    image: apache/spark:3.5.4
+    container_name: cdc-spark-master
     ports:
       - "4040:4040"
       - "7077:7077"
     environment:
-      SPARK_MASTER_WEBUI_PORT: "4040"
       SPARK_NO_DAEMONIZE: "true"
+      AWS_REGION: us-east-1
     user: root
     entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
     volumes:
@@ -167,6 +168,26 @@ services:
     networks:
       - cdc
     logging: *default-logging
+    restart: unless-stopped
+
+  spark-worker:
+    image: apache/spark:3.5.4
+    container_name: cdc-spark-worker
+    ports:
+      - "4041:4040"
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      AWS_REGION: us-east-1
+    user: root
+    entrypoint: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker"]
+    command: ["spark://spark-master:7077"]
+    networks:
+      - cdc
+    logging: *default-logging
+    restart: unless-stopped
+    depends_on:
+      spark-master:
+        condition: service_started
 
   # ── Trino ────────────────────────────────
   # ── Init MinIO bucket ────────────────────
@@ -185,6 +206,19 @@ services:
     networks:
       - cdc
 
+  # ── Prometheus ───────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cdc-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./src/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - cdc
+    logging: *default-logging
+    restart: unless-stopped
+
   # ── Trino ────────────────────────────────
   trino:
     image: trinodb/trino:470
@@ -196,8 +230,9 @@ services:
     networks:
       - cdc
     logging: *default-logging
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "trino", "--execute", "SELECT 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
       interval: 15s
       timeout: 10s
       retries: 10

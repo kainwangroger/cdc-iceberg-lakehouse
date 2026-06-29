@@ -17,12 +17,12 @@ curl -s -X POST "${CONNECT_URL}/connectors" \
       "database.user": "postgres",
       "database.password": "postgres",
       "database.dbname": "source_db",
-      "database.server.name": "postgres",
       "plugin.name": "pgoutput",
       "publication.name": "cdc_pub",
       "slot.name": "debezium_slot",
       "table.include.list": "sales.customers,sales.orders,sales.order_items,sales.inventory",
       "topic.prefix": "cdc",
+      "decimal.handling.mode": "double",
       "key.converter": "org.apache.kafka.connect.json.JsonConverter",
       "value.converter": "org.apache.kafka.connect.json.JsonConverter",
       "key.converter.schemas.enable": "false",
@@ -31,8 +31,8 @@ curl -s -X POST "${CONNECT_URL}/connectors" \
       "heartbeat.interval.ms": "5000",
       "tombstones.on.delete": "false"
     }
-  }' | python3 -m json.tool 2>/dev/null || echo "Failed to register connector"
+  }'
 
 echo ""
 echo "Checking connector status..."
-curl -s "${CONNECT_URL}/connectors/postgres-cdc-connector/status" | python3 -m json.tool 2>/dev/null
+curl -s "${CONNECT_URL}/connectors/postgres-cdc-connector/status"
