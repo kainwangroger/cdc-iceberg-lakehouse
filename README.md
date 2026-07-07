@@ -1,88 +1,98 @@
-# Pipeline CDC — Debezium + Kafka + Spark + Iceberg
-
-**Stack :** Debezium, Kafka Connect, Apache Kafka 3.9, Apache Spark 3.5, Apache Iceberg 1.6, MinIO/S3, Nessie, Trino  
+# Pipeline CDC - Debezium + Kafka + Spark + Iceberg
+**Stack :** Debezium, Kafka Connect, Apache Kafka 3.9, Apache Spark 3.5, Apache Iceberg 1.6, MinIO/S3, Nessie, Trino
 **Volume :** 10M+ changements/heure | **Latence :** < 1 minute
 
----
-
 ## Comprendre le projet
+### Contexte
+Une plateforme SaaS possede une base PostgreSQL de 5TB qui doit etre synchronisee en temps reel avec un lakehouse pour l'analytics, sans downtime. Chaque fois qu'un client est modifie, qu'une commande est passee ou qu'un stock est mis a jour, le changement doit arriver instantanement dans le lakehouse. Le CDC (Change Data Capture) capture chaque INSERT/UPDATE/DELETE au fil de l'eau via Debezium, les achemine dans Kafka, les ecrit dans Iceberg via Spark, et permet le versionnement Git-like des donnees avec Nessie et le time travel avec Trino.
 
-### En langage simple (non-tech)
+## 1. Presentation & Specifications Metier
 
-Imagine une base de données qui alimente en temps réel un entrepôt de données analytique. Chaque fois qu'un client est modifié, qu'une commande est passée ou qu'un stock est mis à jour, le changement doit arriver instantanément dans le lakehouse.
+Le pipeline repose sur 5 composants interconnectes :
 
-C'est le **CDC (Change Data Capture)** :
-1. **PostgreSQL** est la base source (transactions, clients, stocks)
-2. **Debezium** capture chaque INSERT/UPDATE/DELETE au fil de l'eau
-3. **Kafka** transporte les événements
-4. **Spark** lit Kafka et les écrit dans **Iceberg** (format de table moderne)
-5. **Nessie** permet le versionnement Git-like des données
-6. **Trino** permet de requêter avec time travel et zero-copy branching
+- **Source PostgreSQL (16)** : WAL level logical active, publication `cdc_pub` sur 4 tables (customers, orders, order_items, inventory)
+- **Debezium PostgreSQL Connector** : Snapshot initial + CDC continu, topics Kafka prefixes `cdc.postgres.sales.*`
+- **Kafka 3.9 (KRaft)** : Topics avec compression Snappy, retention 24h pour re-streaming
+- **Spark Structured Streaming** : Merge CDC (UPSERT + DELETE) sur Iceberg, checkpoint sur MinIO, fenetre de 10 secondes
+- **Iceberg + Nessie + MinIO** : Format de table avec snapshot isolation et schema evolution, catalogue Nessie avec branches Git-like
+- **Trino** : SQL direct avec time travel et zero-copy branching
 
-> C'est comme un système de vidéosurveillance pour ta base de données : chaque changement est enregistré, stocké, et tu peux voyager dans le temps pour voir l'état des données à n'importe quel moment.
+Tables source : `customers` (id, name, email, loyalty_tier), `orders` (id, customer_id, status, total_amount), `order_items` (id, order_id, product_id, quantity, unit_price), `inventory` (product_id, product_name, quantity, reorder_level).
 
-### En langage technique
+## 2. Architecture Technique
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  PostgreSQL 16 (source)                                     │
-│  Tables: sales.customers, orders, order_items, inventory    │
-│  WAL level: logical | Publication: cdc_pub                  │
-└────────────────────┬────────────────────────────────────────┘
-                     │ WAL streaming
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Debezium PostgreSQL Connector (Kafka Connect)              │
-│  Capture chaque INSERT / UPDATE / DELETE                    │
-│  Topics: cdc.postgres.sales.{customers,orders,inventory}    │
-└────────────────────┬────────────────────────────────────────┘
-                     │ Événements CDC (JSON)
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Kafka 3.9 (KRaft mode)                                     │
-│  Topics avec compression Snappy                             │
-│  Rétention 24h pour re-streaming                            │
-└────────────────────┬────────────────────────────────────────┘
-                     │ Streaming
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Spark Structured Streaming                                 │
-│  Merge CDC : UPSERT + DELETE sur Iceberg                    │
-│  Checkpoint sur MinIO                                       │
-└────────────────────┬────────────────────────────────────────┘
-                     │ Écriture Iceberg
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Apache Iceberg sur MinIO/S3                                │
-│  Format de table : snapshot isolation, schema evolution     │
-│  Catalogue : Nessie (Git-like branching)                    │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-         ┌───────────┴───────────┐
-         ▼                       ▼
-┌──────────────────┐   ┌──────────────────┐
-│  Trino           │   │  Nessie          │
-│  SQL direct      │   │  Branching       │
-│  Time travel     │   │  Data Science    │
-│  Cross-domain    │   │  Zero-copy fork  │
-└──────────────────┘   └──────────────────┘
+  PostgreSQL 16 (source)
+  Tables: sales.customers, orders, order_items, inventory
+  WAL level: logical | Publication: cdc_pub
+          |
+  Debezium PostgreSQL Connector (Kafka Connect)
+  Capture chaque INSERT / UPDATE / DELETE
+  Topics: cdc.postgres.sales.{customers,orders,inventory}
+          |
+  Kafka 3.9 (KRaft mode)
+  Topics avec compression Snappy
+  Retention 24h pour re-streaming
+          |
+  Spark Structured Streaming
+  Merge CDC : UPSERT + DELETE sur Iceberg
+  Checkpoint sur MinIO
+          |
+  Apache Iceberg sur MinIO/S3
+  Format de table : snapshot isolation, schema evolution
+  Catalogue : Nessie (Git-like branching)
+          |
+     +----+----+
+     |         |
+  Trino     Nessie
+  SQL       Branching
+  Time      Data Science
+  travel    Zero-copy fork
 ```
 
----
+## 3. Structure du Projet
 
-## Démarrage rapide
+```
+.
+  docker-compose.yml
+  .env.example
+
+  src/
+    debezium/
+      register-postgres-connector.sh
+    spark-streaming/
+      cdc_to_iceberg.py
+      submit_job.sh
+    scripts/
+      init-source.sql
+      generate_changes.py
+    trino/
+      catalog/
+        iceberg.properties
+        postgresql.properties
+      queries_demo.sql
+      queries_nessie_branching.sql
+    monitoring/
+      grafana/
+        datasources.yml
+        dashboards.yml
+      dashboards/
+        cdc_pipeline.json
+```
+
+## 4. Guide de Demarrage Rapide
 
 ```bash
 # 1. Lancer l'infrastructure
 docker compose up -d
 
-# 2. Vérifier que tout est prêt
+# 2. Verifier que tout est pret
 docker compose ps
 
 # 3. Enregistrer le connector Debezium
 bash src/debezium/register-postgres-connector.sh
 
-# 4. Générer des changements sur PostgreSQL
+# 4. Generer des changements sur PostgreSQL
 pip install psycopg2-binary
 python src/scripts/generate_changes.py
 
@@ -94,123 +104,25 @@ docker compose exec kafka \
   --from-beginning
 ```
 
----
+**Ports :**
 
-## Guide des composants
-
-### 1. PostgreSQL Source
-- WAL level `logical` activé
-- Publication `cdc_pub` sur les 4 tables
-- Tables : `customers`, `orders`, `order_items`, `inventory`
-- Données seed : 5 clients, 4 commandes, 5 produits
-
-### 2. Debezium Connector
-Configuration dans `src/debezium/register-postgres-connector.sh` :
-- `plugin.name=pgoutput` — protocole natif PostgreSQL
-- `snapshot.mode=initial` — snapshot + CDC continu
-- `topic.prefix=cdc` — préfixe des topics Kafka
-- Topics créés : `cdc.postgres.sales.{customers,orders,order_items,inventory}`
-
-### 3. Spark Streaming Job (`src/spark-streaming/cdc_to_iceberg.py`)
-- Lit les topics Kafka par pattern `cdc.postgres.sales.*`
-- Parse les événements Debezium (before/after/op)
-- UPSERT + DELETE via `MERGE INTO` Iceberg
-- Checkpoint sur MinIO pour exactly-once
-- Fenêtre de 10 secondes, 100 events max par trigger
-
-### 4. Iceberg + Nessie + MinIO
-- Catalogue Nessie avec support de branches
-- Entrepôt Iceberg sur MinIO (`s3://iceberg-warehouse/`)
-- Tables : `customers`, `orders`, `inventory`
-- Support du time travel
-
-### 5. Trino
-- Port : 8081
-- Catalog Iceberg : `iceberg.iceberg_warehouse.*`
-- Catalog PostgreSQL : `postgresql.sales.*`
-- Time travel : `SELECT ... FOR TIMESTAMP AS OF ...`
-- Branching Nessie : `CALL iceberg.system.create_branch(...)`
-
-### 6. Générateur de changements (`src/scripts/generate_changes.py`)
-Simule en continue :
-- Nouveaux clients (INSERT)
-- Changements de loyalty tier (UPDATE)
-- Nouvelles commandes (INSERT)
-- Mises à jour de statut (UPDATE → shipped/delivered/cancelled)
-- Ajustements de stock (UPDATE)
-
----
-
-## Structure du projet
-
-```
-.
-├── docker-compose.yml              # Infra : Postgres, Kafka, Connect, MinIO, Nessie, Spark, Trino, Grafana
-├── .env.example                    # Variables d'environnement
-│
-├── src/
-│   ├── debezium/
-│   │   └── register-postgres-connector.sh   # Enregistrer le connector Debezium
-│   │
-│   ├── spark-streaming/
-│   │   ├── cdc_to_iceberg.py                # Spark Streaming job (Kafka → Iceberg)
-│   │   └── submit_job.sh                    # Script de soumission Spark
-│   │
-│   ├── scripts/
-│   │   ├── init-source.sql                  # Init PostgreSQL (tables + seed + publication)
-│   │   └── generate_changes.py             # Générateur de changements en continu
-│   │
-│   ├── trino/
-│   │   ├── catalog/
-│   │   │   ├── iceberg.properties           # Catalog Iceberg (Nessie + MinIO)
-│   │   │   └── postgresql.properties        # Catalog PostgreSQL source
-│   │   ├── queries_demo.sql                 # Requêtes de démonstration
-│   │   └── queries_nessie_branching.sql     # Nessie branching demo
-│   │
-│   └── monitoring/
-│       ├── grafana/
-│       │   ├── datasources.yml
-│       │   └── dashboards.yml
-│       └── dashboards/
-│           └── cdc_pipeline.json           # Dashboard Grafana
-```
-
----
-
-## Ports
-
-| Service | Port | Accès |
+| Service | Port | Acces |
 |---------|------|-------|
 | PostgreSQL source | 5432 | |
 | Kafka | 9092 | |
-| Kafka Connect | 8083 | `http://localhost:8083` |
+| Kafka Connect | 8083 | http://localhost:8083 |
 | MinIO API | 9002 | |
-| MinIO Console | 9003 | `http://localhost:9003` |
-| Nessie | 19120 | `http://localhost:19120` |
-| Spark UI | 4040 | `http://localhost:4040` |
+| MinIO Console | 9003 | http://localhost:9003 |
+| Nessie | 19120 | http://localhost:19120 |
+| Spark UI | 4040 | http://localhost:4040 |
 | Trino | 8081 | `trino --server localhost:8081` |
-| Grafana | 3001 | `http://localhost:3001` (admin/admin) |
+| Grafana | 3001 | http://localhost:3001 (admin/admin) |
 
----
-
-## Flux des données
-
-```
-1. change_generator.py → INSERT/UPDATE/DELETE sur PostgreSQL
-2. PostgreSQL WAL → Debezium connector capture le changement
-3. Debezium → événement JSON dans Kafka topic cdc.postgres.sales.{table}
-4. Spark Streaming → lit Kafka, parse CDC events
-5. Spark → MERGE INTO Iceberg table (UPSERT ou DELETE)
-6. Trino → requêtes SQL avec time travel + branching
-```
-
----
-
-## Démo Nessie (Zero-Copy Branching)
+**Demonstration Nessie (Zero-Copy Branching) :**
 
 ```sql
 -- Sur Trino (port 8081)
--- Créer une branche pour un data scientist
+-- Creer une branche pour un data scientist
 CALL iceberg.system.create_branch('iceberg_warehouse', 'ds_experiment', 'main');
 
 -- Basculer sur la branche
@@ -220,33 +132,34 @@ SET SESSION iceberg.nessie_catalog_ref = 'ds_experiment';
 UPDATE iceberg.iceberg_warehouse.customers
 SET loyalty_tier = 'platinum' WHERE customer_id = 1;
 
--- Revenir à main (inchangé)
+-- Revenir a main (inchange)
 SET SESSION iceberg.nessie_catalog_ref = 'main';
 ```
 
----
+## 5. Validation, Metriques & Observabilite
 
-## Monitoring
+Le dashboard Grafana auto-provisionne couvre : Kafka Consumer Lag, CDC Events per table, Iceberg Snapshot Size, Connect Connector Status, Trino Queries/min, Spark Streaming Progress.
 
-Dashboard Grafana auto-provisionné avec :
-- Kafka Consumer Lag
-- CDC Events per table
-- Iceberg Snapshot Size
-- Connect Connector Status
-- Trino Queries / min
-- Spark Streaming Progress
+Flux des donnees :
+1. `generate_changes.py` -> INSERT/UPDATE/DELETE sur PostgreSQL
+2. PostgreSQL WAL -> Debezium connector capture le changement
+3. Debezium -> evenement JSON dans Kafka topic `cdc.postgres.sales.{table}`
+4. Spark Streaming -> lit Kafka, parse CDC events
+5. Spark -> MERGE INTO Iceberg table (UPSERT ou DELETE)
+6. Trino -> requetes SQL avec time travel + branching
 
----
+Le generateur de changements simule en continu : nouveaux clients (INSERT), changements de loyalty tier (UPDATE), nouvelles commandes (INSERT), mises a jour de statut (UPDATE), ajustements de stock (UPDATE).
 
-## Déploiement GitHub
+## Skills Demonstrated
 
-```bash
-git init && git add . && git commit -m "Initial commit - Pipeline CDC Iceberg Lakehouse"
-gh repo create cdc-iceberg-lakehouse --public --source=. --push
-```
-
----
-
-## Licence
-
-MIT
+- Change Data Capture (CDC) avec Debezium et Kafka Connect
+- Streaming temps reel avec Apache Kafka (KRaft mode)
+- Apache Iceberg pour le lakehouse transactionnel (ACID, schema evolution, snapshot isolation)
+- Spark Structured Streaming avec exactly-once semantics
+- Nessie catalog pour le versionnement Git-like des donnees
+- Trino pour le time travel et le zero-copy branching
+- Gestion des schemas evolutifs (schema change events Debezium)
+- Merge CDC (UPSERT + DELETE) a haute velocite
+- Retention des topics Kafka pour re-streaming
+- Gestion des tombstones (deletes) dans Iceberg
+- Monitoring du lag Kafka Consumer et de la sante du pipeline

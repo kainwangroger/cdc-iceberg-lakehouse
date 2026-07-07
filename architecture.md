@@ -1,29 +1,30 @@
 # Architecture — Pipeline CDC Iceberg Lakehouse
 
 ```mermaid
-graph LR
+%%{init: {"flowchart": {"nodeSpacing": 70, "rankSpacing": 70}}}%%
+graph TB
     subgraph "Source"
-        PG[(PostgreSQL<br/>WAL logical)]
-        CG[Change Generator<br/>Python]
+        PG[("PostgreSQL<br/>WAL logical")]
+        CG["Change Generator<br/>Python"]
     end
 
     subgraph "CDC Layer"
-        DB[Debezium Connector<br/>Kafka Connect]
-        K[Kafka<br/>3 topics CDC]
+        DB["Debezium Connector<br/>Kafka Connect"]
+        K["Kafka<br/>3 topics CDC"]
     end
 
     subgraph "Processing"
-        SP[Spark Structured<br/>Streaming]
-        ICE[Iceberg Tables<br/>MinIO]
+        SP["Spark Structured<br/>Streaming"]
+        ICE["Iceberg Tables<br/>MinIO"]
     end
 
     subgraph "Catalog & Query"
-        NE[Nessie<br/>Git-like branching]
-        TR[Trino<br/>SQL + Time travel]
+        NE["Nessie<br/>Git-like branching"]
+        TR["Trino<br/>SQL + Time travel"]
     end
 
     subgraph "Monitoring"
-        GF[Grafana<br/>Dashboard]
+        GF["Grafana<br/>Dashboard"]
     end
 
     CG -->|INSERT/UPDATE/DELETE| PG
@@ -58,14 +59,14 @@ graph LR
 
 ## Ports
 
-| Service | Port |
-|---------|------|
-| PostgreSQL | 5432 |
-| Kafka | 9092 |
-| Kafka Connect | 8083 |
-| MinIO API | 9002 |
-| MinIO Console | 9003 |
-| Nessie | 19120 |
-| Spark UI | 4040 |
-| Trino | 8081 |
-| Grafana | 3001 |
+| Service       | Port  |
+| ------------- | ----- |
+| PostgreSQL    | 5432  |
+| Kafka         | 9092  |
+| Kafka Connect | 8083  |
+| MinIO API     | 9002  |
+| MinIO Console | 9003  |
+| Nessie        | 19120 |
+| Spark UI      | 4040  |
+| Trino         | 8081  |
+| Grafana       | 3001  |
