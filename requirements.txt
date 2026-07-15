@@ -1,2 +1,7 @@
-# Pour le générateur de changements (hors Docker)
-psycopg2-binary==2.9.10
+# Dépendances locales pour le générateur de changements et le dashboard Streamlit
+psycopg2-binary>=2.9.0
+trino>=0.330.0
+streamlit>=1.30.0
+pandas>=2.0.0
+plotly>=5.18.0
+requests>=2.31.0

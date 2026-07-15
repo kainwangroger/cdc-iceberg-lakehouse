@@ -39,8 +39,8 @@ def get_connection():
         dbname="source_db",
         user="postgres",
         password="postgres",
-        host=os.environ.get("PG_HOST", "localhost"),
-        port=int(os.environ.get("PG_PORT", "5432")),
+        host=os.environ.get("PG_HOST", os.environ.get("POSTGRES_HOST", "localhost")),
+        port=int(os.environ.get("PG_PORT", os.environ.get("POSTGRES_PORT", "5433"))),
     )
 
 
@@ -69,7 +69,7 @@ def generate_change(conn, table, action):
                     "UPDATE sales.customers SET loyalty_tier = %s, updated_at = NOW() WHERE customer_id = %s",
                     (new_tier, cid),
                 )
-                print(f"  ~ UPDATE customer {cid}: {name} → tier {new_tier}")
+                print(f"  ~ UPDATE customer {cid}: {name} -> tier {new_tier}")
 
     elif table == "orders":
         if action == "insert":
@@ -94,7 +94,7 @@ def generate_change(conn, table, action):
                     "UPDATE sales.orders SET status = %s, updated_at = NOW() WHERE order_id = %s",
                     (new_status, oid),
                 )
-                print(f"  ~ UPDATE order {oid}: status → {new_status}")
+                print(f"  ~ UPDATE order {oid}: status -> {new_status}")
 
         elif action == "delete":
             cur.execute("SELECT order_id FROM sales.orders WHERE status = 'cancelled' LIMIT 1")
