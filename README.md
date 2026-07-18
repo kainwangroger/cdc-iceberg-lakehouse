@@ -1,5 +1,16 @@
 # 🏔️ CDC Lakehouse — PostgreSQL → Apache Iceberg en Temps Réel
 
+## 💡 Concept & Objectifs
+
+### 🌟 L'Idée Centrale
+Ingestion en temps réel sans interruption des modifications (Inserts/Updates/Deletes) d'une base relationnelle de production PostgreSQL vers un Lakehouse analytique moderne. Gère l'évolution automatique des schémas et le versioning de type Git sur la donnée (Nessie catalog).
+
+### 🎯 Le But Recherché (Valeur Métier & Technique)
+* **Objectif Principal** : Résoudre la problématique business et technique liée à la thématique du projet.
+* **Stack Technique exploitée** : Debezium, Kafka Connect, Apache Kafka, Apache Spark, Apache Iceberg, MinIO/S3, Nessie, Trino
+* **Livrables Clés** : Environnement Docker complet (Postgres, Debezium, Kafka Connect, Spark, MinIO, Trino, Nessie), application de streaming Spark pour les fusions ACID, et scripts de requêtes analytiques avec time-travel.
+
+
 <div align="center">
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
